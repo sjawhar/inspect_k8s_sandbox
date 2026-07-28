@@ -1,64 +1,123 @@
 """Regression test: a None frame from the exec websocket must not crash.
 
-`peek_*()` and `read_*()` on the k8s WSClient may both call `update()`, so an
+`peek_*()` and `read_*()` on the WSClient may both call `update()`, so an
 intervening update can drain a channel between a truthy peek and the read. The
 read then returns None. Decoding it raised AttributeError inside the exec path,
-surfacing as an opaque "Error executing command in Pod" with cause
-"'NoneType' object has no attribute 'decode'".
+surfacing to callers as an opaque
 
-Measured in production: 37-122 such events per 1k model calls across all ten
-eval arms (worst arm 1493 events / 12222 calls over ~6h), so this is a
-high-frequency cluster-wide fault rather than an edge case.
+    Error executing command in Pod. {"cause": "'NoneType' object has no
+    attribute 'decode'"}
+
+Measured across ten concurrent eval arms over ~6h: 37-122 such events per 1000
+model calls, worst arm 1493 / 12222 calls.
+
+These drive the REAL read loop (`_handle_shell_output`) with a stub client that
+reproduces the race, rather than asserting on the source text of the guard.
 """
 
-import inspect
-from pathlib import Path
+import json
+from typing import Any
 
-import k8s_sandbox._pod.execute as execute_mod
+import pytest
 
-
-def _read_loop_source() -> str:
-    src = Path(inspect.getfile(execute_mod)).read_text(encoding="utf-8")
-    start = src.index("while ws_client.is_open():")
-    end = src.index("self._verify_output_limit(stdout, stderr)", start)
-    return src[start:end]
+from k8s_sandbox._pod.execute import COMPLETED_SENTINEL, ExecuteOperation
 
 
-def test_stdout_frame_is_guarded_before_decode() -> None:
-    """A None stdout frame must never reach the decoding helper."""
-    loop = _read_loop_source()
-    read_at = loop.index("frame = ws_client.read_stdout()")
-    guard_at = loop.index("if frame:", read_at)
-    filter_at = loop.index("_filter_sentinel_and_returncode", read_at)
-    assert read_at < guard_at < filter_at, (
-        "read_stdout() may return None; it must be guarded before being passed "
-        "to _filter_sentinel_and_returncode, which decodes it"
-    )
+class _RaceyWSClient:
+    """Reproduces None-after-truthy-peek on whichever channel is selected.
 
-
-def test_stderr_frame_is_guarded_before_append() -> None:
-    """A None stderr frame must never be appended into the buffer."""
-    loop = _read_loop_source()
-    assert "stderr.append(ws_client.read_stderr())" not in loop, (
-        "read_stderr() may return None; appending it unguarded pushes None into "
-        "the buffer, which fails later at buffer.decode()"
-    )
-    read_at = loop.index("ws_client.read_stderr()")
-    guard_at = loop.index("if stderr_frame:", read_at)
-    append_at = loop.index("stderr.append(stderr_frame)", read_at)
-    assert read_at < guard_at < append_at
-
-
-def test_filter_sentinel_still_rejects_none_loudly() -> None:
-    """The guard is the fix; the helper should not silently accept None.
-
-    Keeping this strict means a NEW unguarded call site fails fast and visibly
-    instead of reintroducing the same opaque cause string.
+    Frame script per channel: each entry is either bytes (returned) or None
+    (the race -- peek said data was available, the read finds none).
     """
-    import pytest
 
-    from k8s_sandbox._pod.execute import ExecuteOperation
+    def __init__(
+        self,
+        stdout_frames: list[bytes | None],
+        stderr_frames: list[bytes | None] | None = None,
+    ) -> None:
+        self._stdout = list(stdout_frames)
+        self._stderr = list(stderr_frames or [])
+        self._open = True
+        self.returncode = 0
 
+    def is_open(self) -> bool:
+        return self._open and bool(self._stdout or self._stderr)
+
+    def update(self, timeout: Any = None) -> None:  # noqa: ANN401
+        return None
+
+    def peek_stdout(self, timeout: Any = None) -> bool:  # noqa: ANN401
+        return bool(self._stdout)
+
+    def read_stdout(self, timeout: Any = None) -> bytes | None:  # noqa: ANN401
+        return self._stdout.pop(0) if self._stdout else None
+
+    def peek_stderr(self, timeout: Any = None) -> bool:  # noqa: ANN401
+        return bool(self._stderr)
+
+    def read_stderr(self, timeout: Any = None) -> bytes | None:  # noqa: ANN401
+        return self._stderr.pop(0) if self._stderr else None
+
+    def close(self) -> None:
+        self._open = False
+
+    def read_channel(self, channel: int, timeout: Any = None) -> str:  # noqa: ANN401
+        """k8s ERROR_CHANNEL (status channel) used to derive the exit code."""
+        if self.returncode == 0:
+            return json.dumps({"metadata": {}, "status": "Success"})
+        return json.dumps(
+            {
+                "metadata": {},
+                "status": "Failure",
+                "message": "command terminated with non-zero exit code",
+                "details": {
+                    "causes": [{"reason": "ExitCode", "message": str(self.returncode)}]
+                },
+            }
+        )
+
+
+def _run(client: _RaceyWSClient) -> Any:  # noqa: ANN401
     op = object.__new__(ExecuteOperation)
-    with pytest.raises(AttributeError):
-        ExecuteOperation._filter_sentinel_and_returncode(op, None)  # type: ignore[arg-type]
+    return ExecuteOperation._handle_shell_output(op, client, None, None)  # type: ignore[arg-type]
+
+
+def _sentinel_frame(returncode: int = 0) -> bytes:
+    """The real in-band completion marker the loop parses out of stdout."""
+    return f"<{COMPLETED_SENTINEL}-{returncode}>".encode()
+
+
+def test_none_stdout_frame_does_not_raise_attributeerror() -> None:
+    """The exact production race: peek truthy, read returns None."""
+    client = _RaceyWSClient(
+        stdout_frames=[b"hello ", None, b"world", _sentinel_frame(0)]
+    )
+    try:
+        result = _run(client)
+    except AttributeError as e:  # pragma: no cover - this is the bug
+        pytest.fail(
+            f"None stdout frame reached the decoder: {e}. This is the "
+            "'NoneType' object has no attribute 'decode' production failure."
+        )
+    assert "hello" in result.stdout
+    assert "world" in result.stdout, "output either side of the None must survive"
+
+
+def test_none_stderr_frame_does_not_poison_the_buffer() -> None:
+    # stdout yields empty filler so the loop keeps iterating while stderr
+    # drains; the sentinel must come LAST because it closes the client.
+    client = _RaceyWSClient(
+        stdout_frames=[b"", b"", b"", _sentinel_frame(0)],
+        stderr_frames=[b"warn ", None, b"more"],
+    )
+    result = _run(client)
+    assert "warn" in result.stderr
+    assert "more" in result.stderr, "output after the None frame must survive"
+
+
+def test_all_none_stdout_frames_still_terminate() -> None:
+    """A channel that only ever yields None must not spin or crash."""
+    client = _RaceyWSClient(stdout_frames=[None, None, _sentinel_frame(3)])
+    client.returncode = 3
+    result = _run(client)
+    assert result.returncode == 3
