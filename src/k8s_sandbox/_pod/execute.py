@@ -135,7 +135,7 @@ class ExecuteOperation(PodOperation):
                     # "'NoneType' object has no attribute 'decode'".
                     if ws_client.peek_stderr():
                         stderr_frame = ws_client.read_stderr()
-                        if stderr_frame:
+                        if stderr_frame is not None:
                             stderr.append(stderr_frame)
                     # Handle stdout _after_ stderr to guarantee that, if buffered, the
                     # sentinel is actioned before the blocking `ws_client.update(None)`.
@@ -143,7 +143,7 @@ class ExecuteOperation(PodOperation):
                         frame = ws_client.read_stdout()
                         # Assumption: The sentinel value is written to
                         # stdout in a single frame, not split across frames.
-                        if frame:
+                        if frame is not None:
                             filtered, returncode = self._filter_sentinel_and_returncode(
                                 frame
                             )

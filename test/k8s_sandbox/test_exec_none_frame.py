@@ -92,6 +92,7 @@ def test_none_stdout_frame_does_not_raise_attributeerror() -> None:
     client = _RaceyWSClient(
         stdout_frames=[b"hello ", None, b"world", _sentinel_frame(0)]
     )
+
     try:
         result = _run(client)
     except AttributeError as e:  # pragma: no cover - this is the bug
@@ -99,6 +100,7 @@ def test_none_stdout_frame_does_not_raise_attributeerror() -> None:
             f"None stdout frame reached the decoder: {e}. This is the "
             "'NoneType' object has no attribute 'decode' production failure."
         )
+
     assert "hello" in result.stdout
     assert "world" in result.stdout, "output either side of the None must survive"
 
@@ -110,7 +112,9 @@ def test_none_stderr_frame_does_not_poison_the_buffer() -> None:
         stdout_frames=[b"", b"", b"", _sentinel_frame(0)],
         stderr_frames=[b"warn ", None, b"more"],
     )
+
     result = _run(client)
+
     assert "warn" in result.stderr
     assert "more" in result.stderr, "output after the None frame must survive"
 
@@ -119,5 +123,7 @@ def test_all_none_stdout_frames_still_terminate() -> None:
     """A channel that only ever yields None must not spin or crash."""
     client = _RaceyWSClient(stdout_frames=[None, None, _sentinel_frame(3)])
     client.returncode = 3
+
     result = _run(client)
+
     assert result.returncode == 3
