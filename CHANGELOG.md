@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Log pod operations that take longer than `INSPECT_POD_OP_SLOW_SECONDS` (default 5) at WARNING, reporting how long the operation spent waiting for the pod-operation concurrency limit, waiting for a free worker thread, and in the Kubernetes call itself. Use it to tell a genuinely slow Kubernetes call apart from one that was merely queued behind other samples.
+- Poll sandbox-service requests every 10s instead of every 2s, removing a fixed per-sandbox exec cost that limited how many samples could run concurrently. Set `INSPECT_SANDBOX_POLLING_INTERVAL` (seconds) to tune; lowering it costs concurrency, raising it adds up to one interval of latency to bridged RPCs (e.g. agent MCP calls).
 - Fix `write_file()` silently writing a truncated or empty file while reporting success
 - `inspect sandbox cleanup k8s` (with no release name) now **exits non-zero** if any release fails to uninstall, rather than reporting `Complete.` and exiting 0. Releases which fail to uninstall are named, at end-of-task cleanup too, along with their namespace and the `inspect sandbox cleanup k8s <release>` command to retry them.
 - **BREAKING CHANGE**: Sandbox pods created by the built-in Helm chart no longer mount
