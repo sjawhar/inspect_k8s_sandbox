@@ -10,6 +10,7 @@ from typing import Callable, TypeVar
 from inspect_ai.util import concurrency
 
 from k8s_sandbox._logger import log_debug, log_warn
+from k8s_sandbox._pod.timing import POD_OPERATION_TIMING, PodOperationTiming
 
 T = TypeVar("T")
 
@@ -72,14 +73,20 @@ class PodOpExecutor:
         Args:
             max_pod_ops: Maximum number of concurrent pod operations. If provided
                 on the first call, overrides the INSPECT_MAX_POD_OPS env var and
-                the default (cpu_count * 4). Ignored on subsequent calls since the
-                singleton is already created.
+                the default (cpu_count * 4). A later call with a different value
+                raises ValueError rather than silently ignoring the configuration.
 
         This method is async-safe (because it doesn't await anything) but not
         thread-safe.
         """
         if cls._instance is None:
             cls._instance = cls(max_pod_ops=max_pod_ops)
+        elif max_pod_ops is not None and cls._instance._max_workers != max_pod_ops:
+            raise ValueError(
+                "PodOpExecutor is already initialized with "
+                f"max_pod_ops={cls._instance._max_workers}; cannot use "
+                f"max_pod_ops={max_pod_ops}."
+            )
         return cls._instance
 
     async def queue_operation(self, callable: Callable[[], T]) -> T:
@@ -117,6 +124,7 @@ class PodOpExecutor:
                 def run_op() -> T:
                     nonlocal started_at
                     started_at = time.monotonic()
+                    _ = context.run(POD_OPERATION_TIMING.set, None)
                     return context.run(callable)
 
                 try:
@@ -127,6 +135,7 @@ class PodOpExecutor:
                     finished_at = time.monotonic()
                     running = self._running
                     self._running -= 1
+                    pod_operation_timing = context.get(POD_OPERATION_TIMING)
                     self._log_op_timing(
                         submitted_at=submitted_at,
                         acquired_at=acquired_at,
@@ -134,6 +143,7 @@ class PodOpExecutor:
                         finished_at=finished_at,
                         queued=queued,
                         running=running,
+                        pod_operation_timing=pod_operation_timing,
                     )
         finally:
             if not acquired:
@@ -148,6 +158,7 @@ class PodOpExecutor:
         finished_at: float,
         queued: int,
         running: int,
+        pod_operation_timing: PodOperationTiming | None,
     ) -> None:
         total = finished_at - submitted_at
         fields: dict[str, object] = {
@@ -163,6 +174,16 @@ class PodOpExecutor:
             # Time in the synchronous Kubernetes call itself.
             "call_s": (
                 round(finished_at - started_at, 3) if started_at is not None else None
+            ),
+            "connect_s": (
+                round(pod_operation_timing.connect_s, 3)
+                if pod_operation_timing is not None
+                else None
+            ),
+            "command_s": (
+                round(pod_operation_timing.command_s, 3)
+                if pod_operation_timing is not None
+                else None
             ),
             "queued": queued,
             "running": running,
