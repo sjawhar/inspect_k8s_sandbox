@@ -562,7 +562,8 @@ class _ServiceConverter:
         This is an escape hatch for Kubernetes settings the Docker Compose shortcuts
         cannot express: 'resources' for request-only resources such as
         'ephemeral-storage' (which mem_limit/cpus/deploy.resources cannot state), and
-        'affinity' for scheduling rules that have no Compose equivalent at all.
+        'affinity', 'volumes', and 'volumeMounts' for Kubernetes settings that have no
+        Compose equivalent at all.
         """
         if not isinstance(extensions, dict):
             raise ComposeConverterError(
@@ -582,10 +583,22 @@ class _ServiceConverter:
             # only date. Unlike nodeSelector, affinity is NOT merged by a RuntimeClass,
             # so it stays available on clusters whose RuntimeClass pins a node selector.
             result["affinity"] = affinity
+        # Passed through verbatim, like 'affinity': Kubernetes volume shapes the
+        # Compose string shorthand cannot express (e.g. OCI image volumes,
+        # KEP-4639). Appended so compose-shorthand volumes are preserved.
+        for key in ("volumes", "volumeMounts"):
+            if (entries := extensions.pop(key, None)) is not None:
+                if not isinstance(entries, list):
+                    raise ComposeConverterError(
+                        f"Invalid 'x-inspect_k8s_sandbox.{key}' type: {type(entries)}. "
+                        f"Expected list. {self.context}"
+                    )
+                result[key] = [*result.get(key, []), *entries]
         if extensions:
             raise ComposeConverterError(
                 f"Unsupported key(s) in service 'x-inspect_k8s_sandbox': "
-                f"{set(extensions)}. Only 'resources' and 'affinity' are supported. "
+                f"{set(extensions)}. Only 'resources', 'affinity', 'volumes', and "
+                f"'volumeMounts' are supported. "
                 f"{self.context}"
             )
 
