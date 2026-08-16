@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add per-service `x-inspect_k8s_sandbox.volumes` and `volumeMounts` compose
+  extensions for Kubernetes volume types, including OCI image volumes, that Compose
+  shorthand cannot express.
 - Fix `write_file()` silently writing a truncated or empty file while reporting success
 - Add a per-service `affinity` Helm value and a matching `x-inspect_k8s_sandbox.affinity` compose extension (alias `x-k8s`), for pod/node affinity rules that Compose cannot express. Use it to control how sandboxes are placed across nodes — for example a `podAffinity` on `kubernetes.io/hostname` to pack sandboxes onto fewer nodes. Unlike `nodeSelector`, affinity is not merged by a RuntimeClass, so it still works on clusters whose RuntimeClass pins a node selector.
 - Poll sandbox-service requests every 10s instead of every 2s, removing a fixed per-sandbox exec cost that limited how many samples could run concurrently. Set `INSPECT_SANDBOX_POLLING_INTERVAL` (seconds) to tune; lowering it costs concurrency, raising it adds up to one interval of latency to bridged RPCs (e.g. agent MCP calls).
