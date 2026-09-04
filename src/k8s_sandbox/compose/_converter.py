@@ -19,6 +19,9 @@ COMPOSE_SCHEMA_PATH = (
 # per-service). Listed canonical-first only for stable error messages.
 _EXTENSION_KEYS = ("x-inspect_k8s_sandbox", "x-k8s")
 
+# These volumes are added to every service Pod by the built-in Helm chart.
+_RESERVED_EXTENSION_VOLUME_NAMES = frozenset(("coredns-config", "resolv-conf"))
+
 
 class ComposeConverterError(Exception):
     """Raised when an error occurs converting a Docker Compose file to Helm values."""
@@ -581,6 +584,17 @@ class _ServiceConverter:
                         f"Invalid 'x-inspect_k8s_sandbox.{key}' type: {type(entries)}. "
                         f"Expected list. {self.context}"
                     )
+                if key == "volumes":
+                    for entry in entries:
+                        if (
+                            isinstance(entry, dict)
+                            and entry.get("name") in _RESERVED_EXTENSION_VOLUME_NAMES
+                        ):
+                            raise ComposeConverterError(
+                                f"Volume name '{entry['name']}' in "
+                                "'x-inspect_k8s_sandbox.volumes' is reserved by the "
+                                f"Helm chart. {self.context}"
+                            )
                 result[key] = [*result.get(key, []), *entries]
         if extensions:
             raise ComposeConverterError(

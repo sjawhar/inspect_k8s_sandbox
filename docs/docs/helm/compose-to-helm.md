@@ -190,7 +190,6 @@ services:
       volumeMounts:
         - name: agent-cli-claude
           mountPath: /opt/agent-cli/claude
-          subPath: payload
           readOnly: true
 ```
 

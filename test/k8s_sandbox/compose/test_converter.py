@@ -667,6 +667,31 @@ volumes:
     ]
 
 
+@pytest.mark.parametrize("name", ["coredns-config", "resolv-conf"])
+def test_rejects_service_extension_chart_reserved_volume_names(
+    tmp_compose: TmpComposeFixture,
+    name: str,
+) -> None:
+    compose_path = tmp_compose(f"""
+services:
+  default:
+    image: python:3.12
+    x-inspect_k8s_sandbox:
+      volumes:
+        - name: {name}
+          emptyDir: {{}}
+""")
+
+    with pytest.raises(ComposeConverterError) as exc_info:
+        convert_compose_to_helm_values(compose_path)
+
+    message = (
+        f"Volume name '{name}' in "
+        "'x-inspect_k8s_sandbox.volumes' is reserved by the Helm chart."
+    )
+    assert message in str(exc_info.value)
+
+
 @pytest.mark.parametrize("key", ["volumes", "volumeMounts"])
 @pytest.mark.parametrize("entries", ["{name: agent-cli-claude}", "not-a-list"])
 def test_rejects_non_list_service_extension_volume_entries(
