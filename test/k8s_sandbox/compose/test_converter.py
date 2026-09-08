@@ -591,11 +591,9 @@ services:
 
 
 def test_service_extension_passes_through_volumes_and_volume_mounts(
-    tmp_path: Path,
+    tmp_compose: TmpComposeFixture,
 ) -> None:
-    compose = tmp_path / "test-compose.yaml"
-    compose.write_text(
-        """
+    compose_path = tmp_compose("""
 services:
   default:
     image: python:3.12
@@ -610,10 +608,8 @@ services:
           mountPath: /opt/agent-cli/claude
           subPath: payload
           readOnly: true
-""",
-        encoding="utf-8",
-    )
-    values = convert_compose_to_helm_values(compose)
+""")
+    values = convert_compose_to_helm_values(compose_path)
     service = values["services"]["default"]
     assert service["volumes"] == [
         {
