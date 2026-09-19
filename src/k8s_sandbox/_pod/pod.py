@@ -10,7 +10,7 @@ from inspect_ai.util import ExecResult
 from k8s_sandbox._pod.error import ContainerRestartedError, PodReplacedError
 from k8s_sandbox._pod.execute import ExecuteOperation
 from k8s_sandbox._pod.executor import PodOpExecutor
-from k8s_sandbox._pod.op import PodInfo, check_for_pod_restart
+from k8s_sandbox._pod.op import PodInfo, PodOperation, check_for_pod_restart
 from k8s_sandbox._pod.read import ReadFileOperation
 from k8s_sandbox._pod.write import WriteFileOperation
 
@@ -146,7 +146,7 @@ class Pod:
         warned_restart = await self.check_for_pod_restart()
         executor = ExecuteOperation(self._info)
         result = await self._run_async(
-            lambda: executor.exec(cmd, stdin, cwd, env, user, timeout)
+            lambda: executor.exec(cmd, stdin, cwd, env, user, timeout), executor
         )
         if not result.success:
             if warned_restart is not None:
@@ -181,7 +181,7 @@ class Pod:
         """
         await self.check_for_pod_restart()
         writer = WriteFileOperation(self._info)
-        await self._run_async(lambda: writer.write_file(data, dst))
+        await self._run_async(lambda: writer.write_file(data, dst), writer)
 
     async def read_file(self, src: Path, dst: IO[bytes]) -> None:
         """
@@ -197,9 +197,18 @@ class Pod:
         """
         await self.check_for_pod_restart()
         reader = ReadFileOperation(self._info)
-        await self._run_async(lambda: reader.read_file(src, dst))
+        await self._run_async(lambda: reader.read_file(src, dst), reader)
 
-    async def _run_async(self, callable: Callable[[], T]) -> T:
-        """Run a synchronous function asynchronously."""
+    async def _run_async(
+        self, callable: Callable[[], T], operation: PodOperation | None = None
+    ) -> T:
+        """Run a synchronous function asynchronously.
+
+        `operation` lets a cancelled caller close that operation's transport so
+        its worker thread finishes instead of holding a pool slot, blocking
+        interpreter exit, or writing into a destination the caller has disposed.
+        """
         executor = PodOpExecutor.get_instance()
-        return await executor.queue_operation(callable)
+        return await executor.queue_operation(
+            callable, on_cancel=operation.close_transport if operation else None
+        )
