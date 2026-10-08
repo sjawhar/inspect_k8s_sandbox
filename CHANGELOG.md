@@ -12,6 +12,7 @@
 - The CoreDNS sidecar no longer serves its `ready` endpoint on port 8181, and refuses
   queries beyond 1000 concurrent.
 - Raise an error when a conflicting `max_pod_ops` setting would otherwise be ignored.
+- Fix startup failing with `... is not valid SemVer string`.
 
 ## 2026-08-12 0.13.0
 
